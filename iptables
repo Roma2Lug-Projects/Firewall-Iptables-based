@@ -1,0 +1,172 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          iptables
+# Required-Start:    mountkernfs $local_fs
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Set up iptables rules
+### END INIT INFO
+
+iptables=/sbin/iptables
+
+### NETWORKS ###
+ReteInterna="192.168.1.0/16"
+
+### IP ROUTER ###
+IpRouterPubblico="160.80.101.36"
+IpRouterPrivato="192.168.1.1"
+
+### INTERFACCE ROUTER ###
+InterfacciaEthInterna="eth0"
+InterfacciaEthEsterna="eth1"
+
+### IP SERVER ###
+Holly="192.168.1.2"
+SwitchAlliedTelesyn="192.168.1.5"
+
+### Ftp ###
+#Per attivare il modulo ftp su porte non standard (!=21) aggiungerle separate da una virgola
+OpzioniModuloFtp="ports=21"
+
+#Per il forwarding delle porte modificare esclusivamente questa funzione, commentando gli eventuali comandi seguendo l'impostazione delle porte già forwardate.
+configuration() {
+
+	##### Router #####
+		
+		#### Servizio ssh #####
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 2221 -j DNAT --to-destination $IpRouterPubblico:22
+
+		$iptables -t filter -A INPUT   -p tcp -d $IpRouterPubblico --dport 22   -j ACCEPT		
+		#######################	
+
+	##################
+
+	##### Holly #####
+
+		##### Servizio http #####
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 80 -j DNAT --to-destination $Holly:80
+
+               	$iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 80 -j ACCEPT
+		#########################
+		
+		##### SCM (Server di versioning) #####
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 8080 -j DNAT --to-destination $Holly:8080
+
+               	$iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 8080 -j ACCEPT
+		######################################		
+	
+		##### Servizio ftp comandi #####			
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 21 -j DNAT --to-destination $Holly:21
+
+                $iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 21 -j ACCEPT
+		# Abilitare il server ftp in modalità passiva. I moduli nf_conntrack_ftp e nf_nat_ftp girano i pacchetti 
+		# sulla macchina giusta e li settano in modalità related
+		#############################################
+	
+		##### Servizio ssh #####
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 22 -j DNAT --to-destination $Holly:22
+
+               	$iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 22 -j ACCEPT
+		########################
+
+		##### Servizio transmission webUI+comandi #####
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 9091 -j DNAT --to-destination $Holly:9091
+		$iptables -t nat -A PREROUTING -p tcp -d $IpRouterPubblico --dport 34567 -j DNAT --to-destination $Holly:34567
+
+               	$iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 9091 -j ACCEPT
+               	$iptables -t filter -A FORWARD -p tcp -d $Holly            --dport 34567 -j ACCEPT
+		############################################
+
+
+	#################
+}
+
+start() {
+
+        #modprobe nf_conntrack_ftp $OpzioniModuloFtp
+        #modprobe nf_nat_ftp
+
+	configuration
+        
+	##### FORWARD #####
+
+                ##### filter #####
+                $iptables -t filter -P FORWARD DROP
+
+                $iptables -t filter -A FORWARD ! -s $ReteInterna -m state --state ESTABLISHED,RELATED -j ACCEPT
+                $iptables -t filter -A FORWARD -s $ReteInterna -j ACCEPT
+                ##################
+
+        ##################
+
+        ##### INPUT #####
+
+                ##### filter #####
+                $iptables -t filter -P INPUT DROP
+                
+                $iptables -t filter -A INPUT ! -s $ReteInterna -m state --state ESTABLISHED,RELATED -j ACCEPT
+                $iptables -t filter -A INPUT -s $ReteInterna -j ACCEPT
+                $iptables -t filter -A INPUT -p icmp -j ACCEPT
+                ##################      
+
+        #################
+
+        ##### POSTROUTING #####
+
+                ##### nat #####
+                $iptables -t nat -A POSTROUTING -o $InterfacciaEthEsterna -s $ReteInterna -j SNAT --to-source $IpRouterPubblico
+                $iptables -t nat -A POSTROUTING -o $InterfacciaEthInterna -s $ReteInterna -j SNAT --to-source $IpRouterPrivato
+
+                ###############
+
+        #######################
+
+        echo 1 > /proc/sys/net/ipv4/ip_forward
+
+
+}
+
+stop() {
+
+        echo 0 > /proc/sys/net/ipv4/ip_forward
+
+        $iptables -t nat -F
+        $iptables -t filter -F
+
+        $iptables -t filter -P FORWARD ACCEPT
+        $iptables -t filter -P INPUT ACCEPT
+
+        #rmmod nf_nat_ftp
+        #rmmod nf_conntrack_ftp
+
+}
+
+case "$1" in
+        start)
+                start
+                echo "Start OK"
+                ;;
+
+        stop)
+                stop
+                echo "Stop OK"
+                ;;
+
+        restart)
+                stop
+                echo "Stop ..."
+                sleep 2
+                start
+                echo "Restart OK"
+                ;;
+
+        *)
+                echo "Usage: iptables {start|stop|restart}" >&2
+                exit 1
+                ;;
+
+esac
+
+exit 0
+
